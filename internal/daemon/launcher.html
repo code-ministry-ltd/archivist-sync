@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Archivist Sync</title>
+<style>
+:root { --paper: #f6f1e8; --ink: #23201b; --muted: #6d655a; --accent: #2f6f62; --surface: #fbf8f2; --hair: #d8cfc0; }
+@media (prefers-color-scheme: dark) { :root { --paper: #12191b; --ink: #ece6da; --muted: #a59d90; --accent: #6fb8a6; --surface: #182224; --hair: #34413f; } }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.55 "Newsreader", Georgia, "Times New Roman", serif; }
+main { max-width: 34rem; margin: 12vh auto; padding: 0 16px; }
+h1 { font: 600 1.9rem/1.2 "Fraunces", Georgia, serif; margin: 0 0 .4em; }
+p { color: var(--muted); }
+button { font: inherit; padding: .55em 1.1em; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--paper); cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+<p>The Archivist</p>
+<h1>Archivist Sync</h1>
+<p id="say">Your folders' settings open in a new tab.</p>
+<button id="open" type="button">Open Archivist Sync</button>
+</main>
+<script>
+document.getElementById("open").addEventListener("click", async () => {
+  const res = await fetch("/launch", { method: "POST" });
+  document.getElementById("say").textContent = res.ok
+    ? "It's opening in a new tab. You can close this one."
+    : "Archivist Sync couldn't open its page. Open it from its shortcut instead.";
+});
+</script>
+</body>
+</html>

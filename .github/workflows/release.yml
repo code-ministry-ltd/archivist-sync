@@ -1,0 +1,41 @@
+name: Release
+
+# A version tag (v1.2.3) builds the program for every system, writes SHA256SUMS, signs it with
+# the project's release key, and publishes them all as a GitHub release (spec 0012 §2, §8).
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go test ./...
+      - name: Build
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir dist
+          for target in darwin/arm64 darwin/amd64 windows/amd64 windows/arm64 linux/amd64 linux/arm64; do
+            os=${target%/*}; arch=${target#*/}
+            name="archivist-sync_${os}_${arch}"
+            [ "$os" = windows ] && name="$name.exe"
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w -X main.version=$version" -o "dist/$name" .
+          done
+          (cd dist && sha256sum archivist-sync_* > SHA256SUMS)
+      - name: Sign
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: go run ./tools/sign dist/SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Archivist Sync ${GITHUB_REF_NAME#v}" --notes-file <(sed -n "/^## \[${GITHUB_REF_NAME#v}\]/,/^## \[/p" CHANGELOG.md | sed '$d')

@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Archivist Sync</title>
+<style>
+:root {
+  --paper: #f6f1e8; --surface: #fbf8f2; --ink: #23201b; --muted: #6d655a; --hair: #d8cfc0;
+  --accent: #2f6f62; --on-accent: #fbf8f2; --warn: #8a4b12; --warn-bg: #f6e6cf; --error: #9b2c2c;
+  --radius: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #12191b; --surface: #182224; --ink: #ece6da; --muted: #a59d90; --hair: #34413f;
+    --accent: #6fb8a6; --on-accent: #10181a; --warn: #f0c58a; --warn-bg: #3a2c19; --error: #f19a9a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.55 "Newsreader", Georgia, "Times New Roman", serif; }
+main { max-width: 46rem; margin: 0 auto; padding: 32px 16px 64px; }
+.wordmark { color: var(--muted); margin: 0; letter-spacing: .02em; }
+h1 { font: 600 2.1rem/1.15 "Fraunces", Georgia, serif; margin: .1em 0 .2em; }
+h2 { font: 600 1.25rem/1.3 "Fraunces", Georgia, serif; margin: 2em 0 .6em; padding-top: 1em; border-top: 1px solid var(--hair); }
+.stand { color: var(--muted); margin-top: 0; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace; font-size: .85em; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+.small { font-size: .9rem; }
+.error { color: var(--error); }
+button, .button { font: inherit; font-size: .95rem; padding: .45em 1em; border-radius: var(--radius); border: 1px solid var(--hair); background: var(--surface); color: var(--ink); cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+button.quiet { border-color: transparent; background: none; color: var(--muted); text-decoration: underline; padding-left: .3em; padding-right: .3em; }
+button:disabled { opacity: .55; cursor: default; }
+input[type=text] { font: inherit; width: 100%; padding: .45em .6em; border: 1px solid var(--hair); border-radius: var(--radius); background: var(--surface); color: var(--ink); }
+.panel { border: 1px solid var(--hair); border-radius: var(--radius); background: var(--surface); padding: 14px 18px; margin: 12px 0; }
+.notice { background: var(--warn-bg); color: var(--warn); border-radius: var(--radius); padding: 10px 14px; margin: 12px 0; }
+.notice button { margin-top: 6px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.folder { padding: 14px 0; border-bottom: 1px solid var(--hair); }
+.folder:last-child { border-bottom: none; }
+.folder .path { font-weight: 600; overflow-wrap: anywhere; }
+.code { font: 600 1.6rem/1.2 "IBM Plex Mono", ui-monospace, Menlo, monospace; letter-spacing: .08em; }
+details { margin-top: 4px; }
+summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+ul.plain { list-style: none; padding: 0; margin: 6px 0; }
+label.check { display: flex; gap: 8px; align-items: baseline; }
+</style>
+</head>
+<body>
+<main>
+<p class="wordmark">The Archivist</p>
+<h1>Archivist Sync</h1>
+<p class="stand">Keeps the folders you choose in your archive. It only reads them: it never changes a file on this computer.</p>
+<div id="needs"></div>
+
+<h2>Your archive</h2>
+<div id="connection"></div>
+
+<h2>Your folders</h2>
+<div id="folders"></div>
+<h2 id="add-heading">Add a folder</h2>
+<div id="add"></div>
+
+<h2>About</h2>
+<div id="about"></div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === null || v === undefined) continue;
+    if (k === "onclick") e.addEventListener("click", v);
+    else if (k === "class") e.className = v;
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k !== null && k !== undefined && k !== false) e.append(k);
+  return e;
+};
+const plural = (n, one, many = one + "s") => `${n.toLocaleString("en-GB")} ${n === 1 ? one : many}`;
+const ago = (iso) => {
+  if (!iso) return "not yet";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} minutes ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} hours ago`;
+  return new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "long" });
+};
+async function call(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "content-type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Something went wrong.");
+  return data;
+}
+
+let status = null;
+let adding = null; // { path, preview, root, edited, existing, error }
+let stopping = null;
+let confirmUninstall = false;
+let note = "";
+
+const STATES = {
+  starting: "Starting…",
+  syncing: "Syncing…",
+  synced: null,
+  empty: "Nothing to sync in this folder yet.",
+  missing: "This folder isn't on the computer right now (an unplugged drive?). Nothing is removed from your archive.",
+  disconnected: "Waiting for this computer to connect to your archive.",
+};
+const REASONS = { format: "a format the archive doesn't take", too_large: "over 10 MB", name: "a name the archive can't take" };
+
+function renderNeeds() {
+  const box = $("needs");
+  box.replaceChildren();
+  if (!status) return;
+  if (status.connectNote) box.append(el("p", { class: "notice" }, status.connectNote));
+  for (const f of status.folders) {
+    if (f.state !== "waiting") continue;
+    box.append(el("div", { class: "notice", role: "status" },
+      el("div", {}, `This sync would remove ${plural(f.waiting, "document")} from ${f.root} in your archive, because they're no longer in ${f.path}. Nothing is removed until you say so.`),
+      el("div", { class: "row" },
+        el("button", { type: "button", onclick: () => act(() => call("POST", `/api/allow-removal?folder=${encodeURIComponent(f.root)}`)) }, "Remove them"),
+        el("span", { class: "small" }, "Or put the files back, and it syncs as usual."))));
+  }
+}
+
+function renderConnection() {
+  const box = $("connection");
+  box.replaceChildren();
+  if (!status) return;
+  if (status.connected) {
+    box.append(el("p", {}, `Connected as `, el("strong", {}, status.device), ` to `, el("span", { class: "mono" }, status.archive.replace(/^https?:\/\//, "")), "."),
+      el("button", { type: "button", class: "quiet", onclick: () => act(() => call("POST", "/api/disconnect")) }, "Disconnect"));
+    return;
+  }
+  if (status.connecting) {
+    box.append(el("div", { class: "panel" },
+      el("p", {}, "Approve this computer in the tab that opened. If none did, open ",
+        el("a", { href: status.connecting.url, target: "_blank", rel: "noopener" }, "this link"),
+        " and check it shows this code:"),
+      el("p", { class: "code" }, status.connecting.code),
+      el("p", { class: "small muted" }, "This page notices by itself once you approve.")));
+    return;
+  }
+  box.append(el("p", {}, "Connect this computer to your archive, once. You approve it in your browser; there's nothing to type."),
+    el("button", { type: "button", class: "primary", onclick: () => act(() => call("POST", "/api/connect?open=1")) }, "Connect"));
+}
+
+function renderFolders() {
+  const box = $("folders");
+  box.replaceChildren();
+  if (!status) return;
+  if (status.folders.length === 0) {
+    box.append(el("p", { class: "muted" }, "No folders yet."));
+    return;
+  }
+  for (const f of status.folders) {
+    const state = f.state === "error" ? null : STATES[f.state];
+    const left = f.leftOutCount > 0
+      ? el("details", {}, el("summary", {}, `${plural(f.leftOutCount, "file")} left out`),
+          el("ul", { class: "plain small" }, ...f.leftOut.map((l) => el("li", {}, el("span", { class: "mono" }, l.path), " ", el("span", { class: "muted" }, REASONS[l.reason] || l.reason))),
+            f.leftOutCount > f.leftOut.length ? el("li", { class: "muted" }, `and ${plural(f.leftOutCount - f.leftOut.length, "more")}`) : null))
+      : null;
+    const actions = stopping === f.root
+      ? el("div", { class: "row" }, el("span", { class: "small" }, "Stop syncing it? What's in your archive stays."),
+          el("button", { type: "button", onclick: () => { stopping = null; act(() => call("DELETE", `/api/folders?folder=${encodeURIComponent(f.root)}`)); } }, "Stop syncing"),
+          el("button", { type: "button", class: "quiet", onclick: () => { stopping = null; render(); } }, "Keep it"))
+      : el("div", { class: "row" },
+          el("button", { type: "button", disabled: f.state === "syncing" ? "" : null, onclick: () => act(() => call("POST", `/api/sync?folder=${encodeURIComponent(f.root)}`)) }, "Sync now"),
+          el("button", { type: "button", class: "quiet", onclick: () => { stopping = f.root; render(); } }, "Stop syncing"));
+    box.append(el("div", { class: "folder" },
+      el("div", { class: "path" }, f.shown || f.path),
+      el("div", { class: "small muted" }, "In your archive as ", el("span", { class: "mono" }, f.root),
+        ` · ${plural(f.files, "file")} · synced ${ago(f.lastSync)}`),
+      state ? el("div", { class: "small" }, state) : null,
+      f.error ? el("div", { class: "small error" }, f.error) : null,
+      left, actions));
+  }
+}
+
+async function choose(path) {
+  try {
+    const preview = await call("GET", `/api/preview?path=${encodeURIComponent(path)}`);
+    adding = { path, preview, root: preview.root, edited: false, existing: false, error: "" };
+  } catch (e) {
+    adding = { path, preview: null, root: "", edited: false, existing: false, error: e.message };
+  }
+  render();
+}
+
+function renderAdd() {
+  const box = $("add");
+  box.replaceChildren();
+  $("add-heading").hidden = !status || !status.connected;
+  if (!status) return;
+  if (!status.connected) return;
+  if (!adding) {
+    const row = el("div", { class: "row" });
+    for (const p of suggestions.filter((s) => !status.folders.some((f) => f.path === s))) {
+      row.append(el("button", { type: "button", onclick: () => choose(p) }, `Add ${p.split(/[\\/]/).pop()}`));
+    }
+    row.append(el("button", { type: "button", class: "primary", onclick: async () => {
+      const { path, noPicker } = await call("POST", "/api/pick");
+      if (noPicker) { adding = { typing: true, path: "" }; render(); return; }
+      if (path) choose(path);
+    } }, "Choose a folder…"));
+    box.append(row);
+    return;
+  }
+  if (adding.typing) {
+    const input = el("input", { type: "text", placeholder: "/home/you/Documents", "aria-label": "Folder" });
+    box.append(el("div", { class: "panel" }, el("p", {}, "Type the folder's full path:"), input,
+      el("div", { class: "row" }, el("button", { type: "button", class: "primary", onclick: () => choose(input.value.trim()) }, "Next"),
+        el("button", { type: "button", class: "quiet", onclick: () => { adding = null; render(); } }, "Cancel"))));
+    return;
+  }
+  const p = adding.preview;
+  const name = el("input", { type: "text", class: "mono", value: adding.root, "aria-label": "Folder in your archive" });
+  name.addEventListener("input", () => { adding.root = name.value.trim(); adding.edited = true; });
+  const panel = el("div", { class: "panel" }, el("p", { class: "path" }, adding.path));
+  if (p) {
+    panel.append(el("p", {}, `${plural(p.files, "file")} will sync.`, p.leftOutCount ? ` ${plural(p.leftOutCount, "file")} will be left out.` : ""));
+    if (p.leftOutCount) panel.append(el("details", {}, el("summary", {}, "What's left out"),
+      el("ul", { class: "plain small" }, ...p.leftOut.map((l) => el("li", {}, el("span", { class: "mono" }, l.path), " ", el("span", { class: "muted" }, REASONS[l.reason] || l.reason))))));
+    panel.append(el("p", { class: "small muted" }, "Markdown, text, PDF, Word, OpenDocument, spreadsheets, CSV and web pages, up to 10 MB each. Converted files keep only their text."),
+      el("label", {}, el("span", { class: "small" }, "Folder in your archive"), name));
+    if (adding.error) panel.append(el("p", { class: "small error" }, adding.error));
+    if (adding.canContinue) panel.append(el("label", { class: "check small" },
+      el("input", { type: "checkbox", ...(adding.existing ? { checked: "" } : {}), onclick: (e) => { adding.existing = e.target.checked; } }),
+      el("span", {}, "It's this folder, synced before: continue it, without duplicating anything.")));
+    panel.append(el("div", { class: "row" },
+      el("button", { type: "button", class: "primary", onclick: start }, "Start syncing"),
+      el("button", { type: "button", class: "quiet", onclick: () => { adding = null; render(); } }, "Cancel")));
+  } else {
+    panel.append(el("p", { class: "error" }, adding.error),
+      el("button", { type: "button", class: "quiet", onclick: () => { adding = null; render(); } }, "Cancel"));
+  }
+  box.append(panel);
+}
+
+async function start() {
+  try {
+    await call("POST", "/api/folders", { path: adding.path, root: adding.edited || adding.existing ? adding.root : "", existing: adding.existing });
+    adding = null;
+    await refresh();
+  } catch (e) {
+    adding.error = e.message;
+    adding.canContinue = /already a folder/.test(e.message);
+    render();
+  }
+}
+
+function renderAbout() {
+  const box = $("about");
+  box.replaceChildren();
+  if (!status) return;
+  box.append(el("p", { class: "small muted" }, `Version ${status.version}. It updates itself.`, note ? ` ${note}` : status.updateNote ? ` ${status.updateNote}` : ""));
+  const row = el("div", { class: "row" }, el("button", { type: "button", onclick: async () => { note = "Checking…"; render(); note = (await call("POST", "/api/update")).note; render(); } }, "Check for updates"));
+  if (confirmUninstall) {
+    row.append(el("span", { class: "small" }, "Uninstall Archivist Sync? It stops syncing and leaves this computer; what's in your archive stays."),
+      el("button", { type: "button", onclick: async () => { await call("POST", "/api/uninstall"); document.body.replaceChildren(el("main", {}, el("h1", {}, "Uninstalled"), el("p", {}, "Archivist Sync has left this computer. What it synced stays in your archive. You can close this tab."))); clearInterval(timer); } }, "Uninstall"),
+      el("button", { type: "button", class: "quiet", onclick: () => { confirmUninstall = false; render(); } }, "Keep it"));
+  } else {
+    row.append(el("button", { type: "button", class: "quiet", onclick: () => { confirmUninstall = true; render(); } }, "Uninstall"));
+  }
+  box.append(row);
+}
+
+function render() { renderNeeds(); renderConnection(); renderFolders(); renderAdd(); renderAbout(); }
+
+async function act(fn) {
+  try { await fn(); } catch (e) { alert(e.message); }
+  await refresh();
+}
+
+let suggestions = [];
+async function refresh() {
+  try {
+    status = await call("GET", "/api/status");
+  } catch {
+    document.body.replaceChildren(el("main", {}, el("h1", {}, "Archivist Sync isn't running"), el("p", {}, "Open it again from its shortcut.")));
+    clearInterval(timer);
+    return;
+  }
+  // Don't redraw under someone typing.
+  if (document.activeElement && document.activeElement.tagName === "INPUT") return;
+  render();
+}
+call("GET", "/api/suggestions").then((d) => { suggestions = d.folders || []; render(); }).catch(() => {});
+refresh();
+const timer = setInterval(refresh, 3000);
+</script>
+</body>
+</html>
