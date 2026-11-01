@@ -43,8 +43,17 @@ func newWorld(t *testing.T) *world {
 	}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	w.stopped = cancel
-	t.Cleanup(cancel)
-	go w.d.Loop(ctx)
+	done := make(chan struct{})
+	// Stop the loop, and wait for a sync in progress, before the temporary folders go:
+	// Windows won't delete a folder a sync is still writing to.
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	go func() {
+		defer close(done)
+		w.d.Loop(ctx)
+	}()
 	return w
 }
 
