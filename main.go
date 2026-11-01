@@ -44,6 +44,7 @@ Usage:
   archivist-sync status               what's syncing
   archivist-sync sync [<folder>]      sync now
   archivist-sync update               install the latest version now
+  archivist-sync stop                 stop it until the next login (installing again does this)
   archivist-sync uninstall            remove Archivist Sync from this computer
   archivist-sync version
 
@@ -132,6 +133,8 @@ func runCommand(cmd string, args []string, asJSON bool) error {
 		return say(asJSON, out, out["note"])
 	case "uninstall":
 		return uninstall(asJSON)
+	case "stop":
+		return stop(asJSON)
 	case "version", "--version", "-v":
 		return say(asJSON, map[string]string{"version": version}, "archivist-sync "+version)
 	case "help", "--help", "-h":
@@ -537,4 +540,28 @@ func uninstall(asJSON bool) error {
 		}
 	}
 	return say(asJSON, map[string]bool{"uninstalled": true}, "Archivist Sync has been removed from this computer. What it synced stays in your archive.")
+}
+
+// stop asks the background program to exit, and waits until it has.
+func stop(asJSON bool) error {
+	store, err := openStore()
+	if err != nil {
+		return err
+	}
+	s := store.Get()
+	if s.Port == 0 || !daemon.Running(s.Port) {
+		return say(asJSON, map[string]bool{"stopped": true}, "Archivist Sync isn't running.")
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(s.Port)+"/api/stop", nil)
+	req.Header.Set(daemon.KeyHeader, s.Key)
+	if res, err := (&http.Client{Timeout: 10 * time.Second}).Do(req); err == nil {
+		res.Body.Close()
+	}
+	for range 40 {
+		if !daemon.Running(s.Port) {
+			return say(asJSON, map[string]bool{"stopped": true}, "Stopped Archivist Sync. It starts again when you log in.")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fail("Archivist Sync didn't stop.")
 }

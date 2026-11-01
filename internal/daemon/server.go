@@ -161,6 +161,14 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/update", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"note": s.d.CheckUpdate(r.Context(), false)})
 	})
+	// Stop, for reinstalling: it exits cleanly, and a login item doesn't restart it.
+	api("POST /api/stop", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, map[string]bool{"ok": true})
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			s.d.stop()
+		}()
+	})
 	api("POST /api/uninstall", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.d.Uninstall(r.Context()); err != nil {
 			fail(w, 500, err.Error())
