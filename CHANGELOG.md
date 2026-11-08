@@ -4,6 +4,12 @@ All notable changes to **Archivist Sync** are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-11-08
+
+### Changed
+
+- The **Add a folder** section now says to sync what's worth keeping, because everything you add is searched and curated, and clutter makes your results worse.
+
 ## [1.0.0] — 2026-11-01
 
 ### Added
